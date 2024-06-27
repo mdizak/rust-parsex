@@ -1,11 +1,14 @@
+#![allow(warnings)]
+use regex::{Regex, RegexBuilder};
+use std::collections::HashMap;
+pub use self::stack::Stack;
+pub use self::token::Token;
+
 pub mod query;
 pub mod stack;
 pub mod token;
 pub mod token_iter;
 
-use crate::stack::Stack;
-use regex::{Regex, RegexBuilder};
-use std::collections::HashMap;
 
 /// Parse block of HTML code into a token stack
 pub fn parse_html(html: &str) -> Stack {
@@ -13,7 +16,7 @@ pub fn parse_html(html: &str) -> Stack {
     let mut stack = Stack::new(html);
 
     // Extract comments
-    let re = RegexBuilder::new(r"<!--(.*?)-->")
+    let re = RegexBuilder::new(r"(?s)<!--(.*?)-->")
         .dot_matches_new_line(true)
         .build()
         .unwrap();

@@ -1,8 +1,9 @@
 use crate::query::Query;
 use crate::token::Token;
 use crate::token_iter::TokenIter;
-use regex::RegexBuilder;
+use regex::{Regex, RegexBuilder};
 use std::collections::HashMap;
+use std::iter::repeat;
 
 #[derive(Debug, Clone)]
 pub struct Stack {
@@ -14,21 +15,16 @@ pub struct Stack {
     code: String,
     position: usize,
     parent_position: usize,
+    excludes: Vec<usize>,
 }
 
 impl Stack {
     /// Instantiate a new token stack
     pub fn new(code: &str) -> Self {
-        Self {
-            tag_id: 0,
-            parent_id: 0,
-            depth: HashMap::new(),
-            tokens: HashMap::new(),
-            stack: HashMap::new(),
-            code: code.to_owned(),
-            position: 0,
-            parent_position: 0,
-        }
+        let mut stack = Self::default();
+        stack.code = code.to_owned();
+
+        stack
     }
 
     /// Push new token onto stack
@@ -40,23 +36,13 @@ impl Stack {
         tag_string: &str,
     ) -> usize {
         self.tag_id += 1;
-        self.stack
-            .entry(self.parent_id)
-            .or_default()
-            .push(self.tag_id);
+        self.stack.entry(self.parent_id).or_default().push(self.tag_id);
         if !is_single {
-            self.depth
-                .entry(tag.to_string())
-                .or_default()
-                .push(self.tag_id);
+            self.depth.entry(tag.to_string()).or_default().push(self.tag_id);
         }
 
         // Add token
-        let token_depth = if let Some(d) = self.depth.get(tag) {
-            d.len()
-        } else {
-            0
-        };
+        let token_depth = if let Some(d) = self.depth.get(tag) { d.len() } else { 0 };
         let contents = if tag == "!" { tag_string } else { "" };
         self.tokens.insert(
             self.tag_id,
@@ -64,14 +50,13 @@ impl Stack {
                 &self.tag_id,
                 &self.parent_id,
                 &token_depth,
+                &is_single,
                 tag,
                 attr_string,
                 contents,
             ),
         );
-        self.code = self
-            .code
-            .replacen(tag_string, format!("<parsex{}>", self.tag_id).as_str(), 1);
+        self.code = self.code.replacen(tag_string, format!("<parsex{}>", self.tag_id).as_str(), 1);
 
         self.parent_id = self.tag_id;
         self.tag_id
@@ -87,9 +72,7 @@ impl Stack {
         if self.depth.get(tag).unwrap().is_empty() {
             self.depth.remove(tag);
         }
-        self.code = self
-            .code
-            .replacen(tag_string, format!("</parsex{}>", &tag_id).as_str(), 1);
+        self.code = self.code.replacen(tag_string, format!("</parsex{}>", &tag_id).as_str(), 1);
 
         // Update token as necessary
         let token = self.tokens.get_mut(&tag_id).unwrap();
@@ -97,14 +80,11 @@ impl Stack {
         self.parent_id = token.parent_id();
 
         // Get body
-        let search = format!("<parsex{}>(.*?)</parsex{}>", tag_id, tag_id);
-        let re = RegexBuilder::new(&search)
-            .dot_matches_new_line(true)
-            .build()
-            .unwrap();
-        if let Some(m) = re.captures(&self.code) {
-            token.set_contents(m.get(1).unwrap().as_str());
-        }
+        //let search = format!("<parsex{}>(.*?)</parsex{}>", tag_id, tag_id);
+        //let re = RegexBuilder::new(&search).dot_matches_new_line(true).build().unwrap();
+        //if let Some(m) = re.captures(&self.code) {
+            //token.set_contents(m.get(1).unwrap().as_str());
+        //}
     }
 
     /// Pull the next immutable token off the stack in hierarchial order, top to bottom, left to right
@@ -156,10 +136,15 @@ impl Stack {
             children.sort();
 
             // Get next index
-            let index = match children.binary_search(&self.position) {
+            let mut index = match children.binary_search(&self.position) {
                 Ok(r) => r + 1,
                 Err(_) => 0,
             };
+
+            // Check excludes
+            if index < children.len() && self.excludes.contains(&children[index]) {
+                index += 1;
+            }
 
             // Check if done this set of tokens
             if index >= children.len()
@@ -194,6 +179,31 @@ impl Stack {
         Query::new(self)
     }
 
+    /// Get contents of tag
+    pub fn get_contents(&mut self, token_id: &usize) -> Option<String> {
+
+        // Get body
+        let search = format!(r"(?s)<parsex{}>(.*?)</parsex{}>", token_id, token_id);
+        let re = RegexBuilder::new(&search).dot_matches_new_line(true).build().unwrap();
+        if let Some(m) = re.captures(&self.code) {
+            return Some(m.get(1).unwrap().as_str().to_string());
+        }
+        None
+    }
+
+    /// Set contents of tag
+    pub fn set_contents(&mut self, token_id: &usize, new_contents: &str) {
+
+        // Initialize
+        let search = format!(r"(?s)<parsex{}>.*?</parsex{}>", token_id, token_id);
+        let replace_text = format!("<parsex{}>{}</parsex{}>", token_id, new_contents, token_id);
+
+        // Search and replace
+        let re = RegexBuilder::new(&search).dot_matches_new_line(true).build().unwrap();
+        self.code = re.replace_all(&self.code.clone(), &replace_text).to_string();
+    }
+
+
     // Get children tokens, must call .iter() or .to_vec() on this result
     pub fn get_children(&mut self, token_id: &usize) -> Query {
         self.query().parent_id(token_id)
@@ -205,13 +215,20 @@ impl Stack {
         self.parent_position = *parent_id;
     }
 
-    /// Render stack, and return resulting HTML including any modifications made to stack.
-    pub fn render(&mut self) -> String {
-        // Initialize
-        let mut html = self.code.clone();
-        self.set_parent_position(&0);
+    /// Set excludes
+    pub fn set_excludes(&mut self, excludes: &Vec<usize>) {
+        self.excludes = excludes.clone();
+    }
 
+    // Render stack
+    pub fn render(&mut self) -> String {
+        self.render_tag(&0)
+    }
+
+    /// Old render method, deprecated, leaving here in case of problems with new methodology.
+    pub fn render_old(&mut self) -> String {
         // Go through  stack
+        let mut html = self.code.clone();
         while let Some(token) = self.pull() {
             // Get attribute string
             let attr_string: String = token
@@ -256,4 +273,163 @@ impl Stack {
 
         html
     }
+
+    /// Render tag
+    pub fn render_tag(&mut self, token_id: &usize) -> String {
+
+        // Get contents
+        let mut html = if *token_id == 0 {
+            self.code.clone()
+        } else {
+            self.get_contents(&token_id).unwrap_or("".to_string())
+        };
+        if html.is_empty() {
+            return html;
+        }
+
+        // Go through tokenized tags
+        let re = Regex::new(r"<([\/]?)parsex(\d+?)>").unwrap();
+        for cap in re.captures_iter(&html.clone()) {
+
+            // Set variables
+            let is_closing: bool = cap.get(1).unwrap().as_str() == "/";
+            let token_id = cap.get(2).unwrap().as_str().parse::<usize>().unwrap();
+
+            // Get token
+            let token = match self.tokens.get(&token_id) {
+                Some(r) => r,
+                None => continue
+            };
+
+            // Get attribute string
+            let attr_string: String = token.attributes().iter().map(|(key, value)| format!("{}=\"{}\"", key, value)).collect::<Vec<String>>().join(" ");
+            let single_slash = if !token.is_closed() { "/" } else { "" };
+        let tag_string = format!("{} {} {}", attr_string, token.attr_extra(), single_slash);
+
+            let open_tag = format!("<{} {}>", token.tag(), tag_string.trim());
+            html = html.replace(format!("<parsex{}>", token.id()).as_str(), open_tag.as_str());
+
+            let close_tag = format!("<{}>", token.tag());
+            let search_close = format!("<parsex{}>", token.id());
+            html = html.replace(&search_close.as_str(), &close_tag.as_str());
+        }
+
+        html.to_string()
+    }
+
+    /// Clone stack from starting tag (eg. body, nav menu, footer) to extract certain portion of page.
+    pub fn clone_from(&mut self, token_id: &usize, excludes: &Vec<usize>) -> Option<Stack> {
+
+        // Get body contents
+        let code = match self.get_contents(&token_id) {
+            Some(r) => r,
+            None => return None
+        };
+
+        // Start stack
+        let mut res = Stack::new("");
+        res.code = code;
+
+        // Go through tokens
+        for tag in self.query().parent_id(&token_id).excludes(&excludes).iter() {
+            res.stack.entry(tag.parent_id()).or_default().push(tag.id());
+            if !tag.is_self_closing() {
+                res.depth.entry(tag.tag()).or_default().push(tag.id());
+            }
+
+            // Add token
+            let token_depth = if let Some(d) = res.depth.get(&tag.tag()) { d.len() } else { 0 };
+            let contents: String = if tag.tag() == "!" { tag.contents() } else { String::new() };
+            self.tokens.insert(tag.id(), tag.clone());
+        }
+
+        Some(res)
+    }
+
+    // Rebuild stack from scratch with proper line spacing and indentation for messy HTML code, or pages all on one-line from React.
+    pub fn rebuild(&mut self) -> String {
+
+        let mut html = self.code.clone();
+        let same_line_tags = vec!["i", "b", "a", "center", "h1", "h2", "h3", "h4", "h5", "h6", "td", "li"];
+        let mut parents = Vec::new();
+        let mut parent_tags: Vec<String> = Vec::new();
+
+        // Delete comments
+        let re = RegexBuilder::new(r"(?s)<!--(.*?)-->")
+            .dot_matches_new_line(true)
+            .build()
+            .unwrap();
+        html = re.replace_all(&html, "").to_string();
+
+        // Go through stack
+        for token in self.iter() {
+
+            // Comment
+            if token.tag() == "!" {
+                let search = format!("<parsex{}>", token.id());
+                html = html.replace(&search.as_str(), "");
+                continue;
+            }
+
+            // Scroll up, if needed
+            if parents.len() > 0 && *parents.last().unwrap() != token.parent_id() {
+                while parents.len() > 0 {
+                    if parents.len() > 0 && *parents.last().unwrap() == token.parent_id() {
+                        break;
+                    } else {
+                        parents.pop();
+                        parent_tags.pop();
+                    }
+                }
+            }
+
+            // Get attribute string
+            let attr_string: String = token.attributes().iter().map(|(key, value)| format!("{}=\"{}\"", key, value)).collect::<Vec<String>>().join(" ");
+            let single_slash = if !token.is_closed() { "/" } else { "" };
+        let tag_string = format!("{} {} {}", attr_string, token.attr_extra(), single_slash);
+
+            // Get indent and newline
+            let mut indent = String::new();
+            if parents.len() > 0 && !same_line_tags.contains(&parent_tags.last().unwrap().as_str()) { 
+                indent = repeat(' ').take(parents.len() * 4).collect::<String>();
+            }
+            let suffix = if same_line_tags.contains(&token.tag().as_str()) { "" } else { "\n" };
+
+            // Opening tag
+            let open_tag = format!("{}<{} {}>{}", indent, token.tag(), tag_string.trim(), suffix);
+            html = html.replace(format!("<parsex{}>", token.id()).as_str(), open_tag.as_str());
+
+            // Closing tag
+            let close_tag = format!("</{}>", token.tag());
+            let search_close = format!("</parsex{}>", token.id());
+            html = html.replace(&search_close.as_str(), &close_tag.as_str());
+
+            if token.is_closed() && !same_line_tags.contains(&token.tag().as_str()) {
+                parents.push(token.id().clone());
+                parent_tags.push(token.tag().clone().to_string());
+            }
+        }
+
+        html = html.replace("\n\n", "\n");
+        html
+    }
+
 }
+
+impl Default for Stack {
+    fn default() -> Stack {
+        Stack {
+            tag_id: 0,
+            parent_id: 0,
+            depth: HashMap::new(),
+            tokens: HashMap::new(),
+            stack: HashMap::new(),
+            code: String::new(),
+            position: 0,
+            parent_position: 0,
+            excludes: Vec::new()
+        }
+    }
+
+}
+

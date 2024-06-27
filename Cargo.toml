@@ -1,6 +1,6 @@
 [package]
 name = "parsex"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Matt Dizak"]
 homepage = "https://apexpl.io/"
 keywords = ["html-parser", "html", "parser"]

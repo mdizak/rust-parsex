@@ -5,7 +5,7 @@ Provides a simplistic, quick and efficient way to parse HTML documents plus opti
 
 ## Examples
 
-~~~
+```
     // Parse HTML code
     let html = "<h1>Testing parsex</h1><p class=\"headline\">Quick test of this Rust package</p><br /><br /><ul id=\"category-list\"><li>First Item</li><li>Second Item</li><li>Third Item</li></ul><br /><p>Feel free to <a href-\"/contact\" id=\"contact-link\">contact us</a>.</p>";
     let mut stack = parsex::parse_html(html);
@@ -42,7 +42,7 @@ Provides a simplistic, quick and efficient way to parse HTML documents plus opti
     // Render HTML document with modifications
     let updated_html = stack.render();
     println!("Updated HTML\n\n{}\n", updated_html);
-~~~
+```
 
 
 ## Contact
